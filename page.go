@@ -8,6 +8,7 @@ import (
 	"unsafe"
 )
 
+// page 结构体的大小
 const pageHeaderSize = unsafe.Sizeof(page{})
 
 const minKeysPerPage = 2
@@ -16,9 +17,13 @@ const branchPageElementSize = unsafe.Sizeof(branchPageElement{})
 const leafPageElementSize = unsafe.Sizeof(leafPageElement{})
 
 const (
-	branchPageFlag   = 0x01
-	leafPageFlag     = 0x02
-	metaPageFlag     = 0x04
+	// 分支节点
+	branchPageFlag = 0x01
+	// 叶子节点
+	leafPageFlag = 0x02
+	// meta 页
+	metaPageFlag = 0x04
+	// freelist 页，存放无数据的空 page
 	freelistPageFlag = 0x10
 )
 
@@ -28,14 +33,20 @@ const (
 
 type pgid uint64
 
+//
 type page struct {
-	id       pgid
-	flags    uint16
-	count    uint16
+	// page id
+	id pgid
+	// 此页中保存的具体数据类型，即上面四个 Flag
+	flags uint16
+	// 具体数据类型中的计数
+	count uint16
+	// 是否有后序页，如果有，overflow 表示后续页的数量
 	overflow uint32
 }
 
 // typ returns a human readable page type string used for debugging.
+// 返回 page 的类型
 func (p *page) typ() string {
 	if (p.flags & branchPageFlag) != 0 {
 		return "branch"
@@ -55,6 +66,7 @@ func (p *page) meta() *meta {
 }
 
 // leafPageElement retrieves the leaf node by index
+// 根据 index 检索 叶子节点
 func (p *page) leafPageElement(index uint16) *leafPageElement {
 	off := uintptr(index) * unsafe.Sizeof(leafPageElement{})
 	return (*leafPageElement)(unsafe.Pointer(uintptr(unsafe.Pointer(p)) + unsafe.Sizeof(*p) + off))
@@ -107,10 +119,14 @@ func (s pages) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 
 // branchPageElement represents a node on a branch page.
+// branch node 的 value 是子节点的 page id
 type branchPageElement struct {
-	pos   uint32
+	// Element 对应的键值对存储位置相对于当前 Element 的偏移量
+	pos uint32
+	// Element 对应 key 的大小，以 byte 为单位
 	ksize uint32
-	pgid  pgid
+	// Element 指向的子节点所在 page id
+	pgid pgid
 }
 
 // key returns a byte slice of the node key.
@@ -123,10 +139,17 @@ func (n *branchPageElement) key() []byte {
 }
 
 // leafPageElement represents a node on a leaf page.
+// 磁盘上记录具体 key-value 的索引
+// &leafPageElement + pos == &key
+// &leafPageElement + pos + ksize == &value
 type leafPageElement struct {
+	// 标明当前 Element 是否代表一个 Bucket，如果是则其值为 1，如果不是则其值为 0;
 	flags uint32
-	pos   uint32
+	// Element 对应的键值对存储位置相对于当前 Element 的偏移量
+	pos uint32
+	// Element 对应 key 的大小，以 byte 为单位
 	ksize uint32
+	// Element 对应 value 的大小，以 byte 为单位
 	vsize uint32
 }
 
@@ -178,6 +201,7 @@ func (a pgids) merge(b pgids) pgids {
 
 // mergepgids copies the sorted union of a and b into dst.
 // If dst is too small, it panics.
+// 合并两个 page
 func mergepgids(dst, a, b pgids) {
 	if len(dst) < len(a)+len(b) {
 		panic(fmt.Errorf("mergepgids bad len %d < %d + %d", len(dst), len(a), len(b)))
