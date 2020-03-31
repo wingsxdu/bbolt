@@ -86,6 +86,7 @@ func (f *freelist) arrayFreeCount() int {
 }
 
 // pending_count returns count of pending pages
+// 哈希表里 pgid 总个数
 func (f *freelist) pending_count() int {
 	var count int
 	for _, txp := range f.pending {
@@ -112,6 +113,7 @@ func (f *freelist) copyallunsafe(dstptr unsafe.Pointer) { // dstptr is []pgid da
 	mergepgids(dst, fpgids, m)
 }
 
+// 将 f.ids 和 f.pending 的内容有序地合并到 dst 中
 func (f *freelist) copyall(dst []pgid) {
 	m := make(pgids, 0, f.pending_count())
 	for _, txp := range f.pending {

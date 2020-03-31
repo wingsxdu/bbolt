@@ -15,9 +15,12 @@ import (
 // Changing data while traversing with a cursor may cause it to be invalidated
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
+// b+ tree(bucket)的迭代器，用于遍历数据库
 type Cursor struct {
+	// 遍历的 bucket
 	bucket *Bucket
-	stack  []elemRef
+	// // 用于记录游标的搜索路径，最后一个元素指向游标当前位置
+	stack []elemRef
 }
 
 // Bucket returns the bucket that this cursor was created from.
@@ -30,6 +33,7 @@ func (c *Cursor) Bucket() *Bucket {
 // The returned key and value are only valid for the life of the transaction.
 func (c *Cursor) First() (key []byte, value []byte) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
+	// 清空 stack
 	c.stack = c.stack[:0]
 	p, n := c.bucket.pageNode(c.bucket.root)
 	c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
@@ -315,7 +319,9 @@ func (c *Cursor) nsearch(key []byte) {
 
 	// If we have a node then search its inodes.
 	if n != nil {
+		// 二分搜索
 		index := sort.Search(len(n.inodes), func(i int) bool {
+			// 比较 key 的大小
 			return bytes.Compare(n.inodes[i].key, key) != -1
 		})
 		e.index = index
@@ -373,9 +379,13 @@ func (c *Cursor) node() *node {
 }
 
 // elemRef represents a reference to an element on a given page/node.
+// elemRef 指向 B+Tree 上的一个节点，节点有可能已经实例化成 node，也有可能是未实例化的 page。
 type elemRef struct {
-	page  *page
-	node  *node
+	// 当前节点的 page
+	page *page
+	// 当前节点的 node
+	node *node
+	// page或node中的下标
 	index int
 }
 

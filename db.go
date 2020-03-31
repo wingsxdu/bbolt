@@ -120,6 +120,7 @@ type DB struct {
 	// of truncate() and fsync() when growing the data file.
 	AllocSize int
 
+	// 	实际上是数据文件的名称，db.path = db.file.Name()
 	path     string
 	openFile func(string, int, os.FileMode) (*os.File, error)
 	file     *os.File
@@ -127,17 +128,22 @@ type DB struct {
 	data     *[maxMapSize]byte
 	datasz   int
 	filesz   int // current on disk file size
-	meta0    *meta
+	// 0 号 meta 页
+	meta0 *meta
+	// 1 号 meta 页
 	meta1    *meta
 	pageSize int
 	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
-	stats    Stats
+	// 读写事务，BoltDB 同时只能有一个读写事务
+	rwtx *Tx
+	// 只读事务，BoltDB 可以有多个只读事务
+	txs   []*Tx
+	stats Stats
 
 	freelist     *freelist
 	freelistLoad sync.Once
 
+	// page 缓冲池,用于减少内存分配开销
 	pagePool sync.Pool
 
 	batchMu sync.Mutex
@@ -176,6 +182,7 @@ func (db *DB) String() string {
 // If the file does not exist then it will be created automatically.
 // Passing in nil options will cause Bolt to open the database with the default options.
 func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
+	// 创建 DB 对象，并将其状态设为 opened
 	db := &DB{
 		opened: true,
 	}
@@ -206,6 +213,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Open data file and separate sync handler for metadata writes.
+	// 打开或创建文件对象
 	var err error
 	if db.file, err = db.openFile(path, flag|os.O_CREATE, mode); err != nil {
 		_ = db.close()
@@ -220,12 +228,17 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// if !options.ReadOnly.
 	// The database file is locked using the shared lock (more than one process may
 	// hold a lock at the same time) otherwise (options.ReadOnly is set).
+	// 文件锁，防止多个操作同时操作数据库文件
+	// 根据 ReadOnly 参数决定是否以进程独占的方式打开文件
+	// 如果以只读方式访问数据库文件，则不同进程可以共享读该文件；
+	// 如果以读写方式访问数据库文件，则文件锁将被独占，其他进程无法同时以读写方式访问该数据库文件，
 	if err := flock(db, !db.readOnly, options.Timeout); err != nil {
 		_ = db.close()
 		return nil, err
 	}
 
 	// Default values for test hooks
+	// 初始化写文件函数
 	db.ops.writeAt = db.file.WriteAt
 
 	if db.pageSize = options.PageSize; db.pageSize == 0 {
@@ -234,9 +247,11 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Initialize the database if it doesn't exist.
+
 	if info, err := db.file.Stat(); err != nil {
 		_ = db.close()
 		return nil, err
+		// 	如果文件大小为零，则对 db 进行初始化
 	} else if info.Size() == 0 {
 		// Initialize new files with meta pages.
 		if err := db.init(); err != nil {
@@ -244,6 +259,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 			_ = db.close()
 			return nil, err
 		}
+		// 如果大小不为零，则试图读取前 4K 个字节来确定当前数据库的 pageSize。
 	} else {
 		// Read the first meta page to determine the page size.
 		var buf [0x1000]byte
@@ -274,6 +290,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Memory map the data file.
+	// 对数据库文件进行内存映射 mmap
 	if err := db.mmap(options.InitialMmapSize); err != nil {
 		_ = db.close()
 		return nil, err
@@ -287,6 +304,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 
 	// Flush freelist when transitioning from no sync to sync so
 	// NoFreelistSync unaware boltdb can open the db later.
+	// 读数据库文件中的 freelist 页，并初始化 db 对象中的 freelist 列表
 	if !db.NoFreelistSync && !db.hasSyncedFreelist() {
 		tx, err := db.Begin(true)
 		if tx != nil {
@@ -423,6 +441,10 @@ func (db *DB) mmapSize(size int) (int, error) {
 }
 
 // init creates a new database file and initializes its meta pages.
+// 前4个page的结构：
+// +++++++++++++++++++++++++++++++++++++
+// | meta | meta | freelist | leafpage |
+// +++++++++++++++++++++++++++++++++++++
 func (db *DB) init() error {
 	// Create two meta pages on a buffer.
 	buf := make([]byte, db.pageSize*4)
@@ -456,9 +478,11 @@ func (db *DB) init() error {
 	p.count = 0
 
 	// Write the buffer to our data file.
+	// 调用写文件函数将 buffer 中的数据写入文件
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
+	// 将内核中磁盘页缓冲立即写入磁盘
 	if err := fdatasync(db); err != nil {
 		return err
 	}
@@ -544,6 +568,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	return db.beginTx()
 }
 
+// 创建只读事务
 func (db *DB) beginTx() (*Tx, error) {
 	// Lock the meta pages while we initialize the transaction. We obtain
 	// the meta lock before the mmap lock because that's the order that the
@@ -553,6 +578,15 @@ func (db *DB) beginTx() (*Tx, error) {
 	// Obtain a read-only lock on the mmap. When the mmap is remapped it will
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
+	// 关于 mmaplock，有下面的分析：
+	// db.mmap() 在两种情况下会被调用:
+	// 第一种情况是在数据文件创建或打开后进行第一次内存映射时；
+	// 这是还没有开始 db.beginTx() 进行事务，所以不存在 db.mmaplock 锁争用问题
+	// 第二种情况是写入数据库后且数据库文件要增大时，分配新的页框后，需要重新调用 mmap 将新的文件范围映射入进程地址空间。
+	// 这时当数据库在不同线程中进行读写时，可能存在其中一个线程中的读写事务写入了大量数据，在 Commit 时，由于当前已映射区的空闲页不够，
+	// 会调用 db.mmap() 重新进行内存映射，此时若有未关闭的只读事务，由于它占用着在 db.mmaplock 的读锁， db.mmap() 会阻塞。
+	// 因此，如果存在着耗时的只读事务，同时写事务需要 remmap 时，写操作会被读操作阻塞。
+	// 由此可以看出，使用 BoltDB 时，应尽量避免耗时的读操作，同时在写操作时应避免频繁地 remmap。
 	db.mmaplock.RLock()
 
 	// Exit if the database is not open yet.
@@ -567,6 +601,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	t.init(db)
 
 	// Keep track of transaction until it closes.
+	// 将创建好的事务对象加入到db.txs中
 	db.txs = append(db.txs, t)
 	n := len(db.txs)
 
@@ -582,6 +617,7 @@ func (db *DB) beginTx() (*Tx, error) {
 	return t, nil
 }
 
+// 创建读写事务
 func (db *DB) beginRWTx() (*Tx, error) {
 	// If the database was opened with Options.ReadOnly, return an error.
 	if db.readOnly {
@@ -590,10 +626,12 @@ func (db *DB) beginRWTx() (*Tx, error) {
 
 	// Obtain writer lock. This is released by the transaction when it closes.
 	// This enforces only one writer transaction at a time.
+	// 获取读写锁，在Close()函数解锁
 	db.rwlock.Lock()
 
 	// Once we have the writer lock then we can lock the meta pages so that
 	// we can set up the transaction.
+	// 获取metalock，来修改meta
 	db.metalock.Lock()
 	defer db.metalock.Unlock()
 
@@ -607,6 +645,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t := &Tx{writable: true}
 	t.init(db)
 	db.rwtx = t
+	// 释放过去的只读事务用到的 page
 	db.freePages()
 	return t, nil
 }
@@ -691,6 +730,7 @@ func (db *DB) Update(fn func(*Tx) error) error {
 	t.managed = true
 
 	// If an error is returned from the function then rollback and return error.
+	// 将事务传入回调函数
 	err = fn(t)
 	t.managed = false
 	if err != nil {
@@ -724,6 +764,7 @@ func (db *DB) View(fn func(*Tx) error) error {
 	// If an error is returned from the function then pass it through.
 	err = fn(t)
 	t.managed = false
+	// 通过调用 Rollback() 来结束事务
 	if err != nil {
 		_ = t.Rollback()
 		return err
@@ -892,6 +933,7 @@ func (db *DB) pageInBuffer(b []byte, id pgid) *page {
 }
 
 // meta retrieves the current meta page reference.
+// 返回的是两个 meta 中 txid 更大且通过校验的那个
 func (db *DB) meta() *meta {
 	// We have to return the meta with the highest txid which doesn't fail
 	// validation. Otherwise, we can cause errors when in fact the database is
@@ -916,9 +958,13 @@ func (db *DB) meta() *meta {
 }
 
 // allocate returns a contiguous block of memory starting at a given page.
+// 为给定 page 分配内存
 func (db *DB) allocate(txid txid, count int) (*page, error) {
 	// Allocate a temporary buffer for the page.
 	var buf []byte
+	// 如果只需要一页缓存，那么并不直接进行内存分配，
+	// 而是通过 Pool缓冲池来分配，以减少分配内存带来的开销。
+	// 并且在 tx.write() 中向磁盘写入脏页后，会将所有只占一个页框的脏页清空，并放入Pool缓冲池。
 	if count == 1 {
 		buf = db.pagePool.Get().([]byte)
 	} else {
@@ -933,8 +979,10 @@ func (db *DB) allocate(txid txid, count int) (*page, error) {
 	}
 
 	// Resize mmap() if we're at the end.
+	// 将新申请的页缓存的页号设为文件内容结尾处的页号
 	p.id = db.rwtx.meta.pgid
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize
+	// 如果已经映射到内存的文件总页数不够，则触发 remmap。
 	if minsz >= db.datasz {
 		if err := db.mmap(minsz); err != nil {
 			return nil, fmt.Errorf("mmap allocate error: %s", err)
@@ -1112,18 +1160,28 @@ type Info struct {
 }
 
 type meta struct {
-	magic    uint32
-	version  uint32
+	// 用于文件标识
+	magic uint32
+	// 版本号
+	version uint32
+	// 页大小
 	pageSize uint32
-	flags    uint32
-	root     bucket
+	// 没有用到
+	flags uint32
+	// 根 bucket 的头信息，初始化为 page id = 3
+	root bucket
+	// 指向 freelist 的 page id，初始化为 2
 	freelist pgid
-	pgid     pgid
-	txid     txid
+	// 正式数据 从 page id 4 开始，值为已经使用的最大 pgid +1，与 MVCC 有关
+	pgid pgid
+	// 事务序列号
+	txid txid
+	// 上面各字段的 64 位 FNV 哈希校验
 	checksum uint64
 }
 
 // validate checks the marker bytes and version of the meta page to ensure it matches this binary.
+// 校验 meta 数据是否合法
 func (m *meta) validate() error {
 	if m.magic != magic {
 		return ErrInvalid
@@ -1141,6 +1199,7 @@ func (m *meta) copy(dest *meta) {
 }
 
 // write writes the meta onto a page.
+// 将 meta 的信息写入到 page 中
 func (m *meta) write(p *page) {
 	if m.root.root >= m.pgid {
 		panic(fmt.Sprintf("root bucket pgid (%d) above high water mark (%d)", m.root.root, m.pgid))
@@ -1151,6 +1210,7 @@ func (m *meta) write(p *page) {
 
 	// Page id is either going to be 0 or 1 which we can determine by the transaction ID.
 	p.id = pgid(m.txid % 2)
+	// 将页面 flags 设定为 metaPageFlag
 	p.flags |= metaPageFlag
 
 	// Calculate the checksum.

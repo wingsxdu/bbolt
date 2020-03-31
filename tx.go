@@ -23,13 +23,22 @@ type txid uint64
 // are using them. A long running read transaction can cause the database to
 // quickly grow.
 type Tx struct {
-	writable       bool
-	managed        bool
-	db             *DB
-	meta           *meta
-	root           Bucket
-	pages          map[pgid]*page
-	stats          TxStats
+	// 是否是可读写的事务
+	writable bool
+	// 指示当前事务是否被 db 托管，即通过 db.Update() 或者 db.View() 来写或者读数据库。
+	// 因为 BoltDB 还支持直接调用 Tx 的相关方法进行读写，这时 managed 字段为 false;
+	managed bool
+	// 指向当前db对象
+	db *DB
+	// 事务初始化时从 db 中得到的 meta 信息
+	meta *meta
+	// 事务的根 Bucket,所有的事务均从根 Bucket 进行查找
+	root Bucket
+	// 当前事务读或写的 page
+	pages map[pgid]*page
+	// 操作统计相关
+	stats TxStats
+	// 事务在 Commit 时的回调函数
 	commitHandlers []func()
 
 	// WriteFlag specifies the flag for write-related methods like WriteTo().
@@ -38,24 +47,29 @@ type Tx struct {
 	// By default, the flag is unset, which works well for mostly in-memory
 	// workloads. For databases that are much larger than available RAM,
 	// set the flag to syscall.O_DIRECT to avoid trashing the page cache.
+	// 复制或移动数据库文件时，指定的文件打开模式
 	WriteFlag int
 }
 
 // init initializes the transaction.
 func (tx *Tx) init(db *DB) {
+	// 将 tx.db 初始化为传入的 db，将 tx.pages 初始化为空
 	tx.db = db
 	tx.pages = nil
 
 	// Copy the meta page since it can be changed by the writer.
+	// 将 db 中的 meta （最新的数据状态）复制到 tx.meta 中（对象拷贝而不是指针拷贝）
 	tx.meta = &meta{}
 	db.meta().copy(tx.meta)
 
 	// Copy over the root bucket.
+	// 初始化根 bucket
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
 	*tx.root.bucket = tx.meta.root
 
 	// Increment the transaction id and add a page cache for writable transactions.
+	// 如果是可读写的事务，就将 meta 中的 txid 加 1，当可读写事务 commit 之后，meta 就会更新到数据库文件中，
 	if tx.writable {
 		tx.pages = make(map[pgid]*page)
 		tx.meta.txid += txid(1)
@@ -139,6 +153,10 @@ func (tx *Tx) OnCommit(fn func()) {
 // Commit writes all changes to disk and updates the meta page.
 // Returns an error if a disk write error occurs, or if Commit is
 // called on a read-only transaction.
+// 1.从根Bucket开始，对访问过的Bucket进行合并和分裂，让进行过插入和删除操作的B+树重新达到平衡状态；
+// 2.更新freeList页；
+// 3.将由当前Transaction分配的页缓存写入磁盘，需要分配页缓存的地方有：a.节点分裂时产生新的节点；b.freeList页重新分配
+// 4.将meta页写入磁盘
 func (tx *Tx) Commit() error {
 	_assert(!tx.managed, "managed tx commit not allowed")
 	if tx.db == nil {
@@ -617,6 +635,7 @@ func (tx *Tx) writeMeta() error {
 
 // page returns a reference to the page with a given id.
 // If page has been written to then a temporary buffered page is returned.
+// 给定id，返回PageInfo，人为可读的page结构
 func (tx *Tx) page(id pgid) *page {
 	// Check the dirty pages first.
 	if tx.pages != nil {

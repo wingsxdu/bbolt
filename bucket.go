@@ -8,9 +8,11 @@ import (
 
 const (
 	// MaxKeySize is the maximum length of a key, in bytes.
+	// key 的最大长度:32 kb
 	MaxKeySize = 32768
 
 	// MaxValueSize is the maximum length of a value, in bytes.
+	// value的最大长度，2^32 bytes
 	MaxValueSize = (1 << 31) - 2
 )
 
@@ -26,19 +28,32 @@ const (
 const DefaultFillPercent = 0.5
 
 // Bucket represents a collection of key/value pairs inside the database.
+// 每个 Bucket 下有一个单调递增的 sequence，类似于自增主键。
+// 一个 Bucket 代表一个完整的 B+ Tree
 type Bucket struct {
+	// Bucket 的头部
 	*bucket
-	tx       *Tx                // the associated transaction
-	buckets  map[string]*Bucket // subbucket cache
-	page     *page              // inline page reference
-	rootNode *node              // materialized node for the root page.
-	nodes    map[pgid]*node     // node cache
+	// 事务，每次事务都是一次查找定位，修改或读取数据的过程
+	tx *Tx // the associated transaction
+	// 缓存记录查找过程中已经查找过的 buckets
+	buckets map[string]*Bucket // subbucket cache
+	// inline Bucket 的 page 引用
+	page *page // inline page reference
+	// Bucket 的根节点，也是对应 B+ Tree 的根节点
+	rootNode *node // materialized node for the root page.
+	// Bucket 中的 node 集合（缓存）
+	nodes map[pgid]*node // node cache
 
 	// Sets the threshold for filling nodes when they split. By default,
 	// the bucket will fill to 50% but it can be useful to increase this
 	// amount if you know that your write workloads are mostly append-only.
 	//
 	// This is non-persisted across transactions so it must be set in every Tx.
+	// Bucket中节点的填充百分比(或者占空比)。
+	// 该值与 B+ Tree 中节点的分裂有关系，当节点中 Key 的个数或者 size 超过整个 node 容量的某个百分比后，
+	// 节点必须分裂为两个节点，这是为了防止 B+ Tree 中插入 K/V 时引发频繁的再平衡操作，
+	// 所以只有当确定大数多写入操作是在尾部添加时，这个值调大才有帮助。
+	// 该值的默认值是50%.
 	FillPercent float64
 }
 
@@ -47,7 +62,9 @@ type Bucket struct {
 // then its root page can be stored inline in the "value", after the bucket
 // header. In the case of inline buckets, the "root" will be 0.
 type bucket struct {
-	root     pgid   // page id of the bucket's root-level page
+	// bucket 所在的根 page id
+	root pgid // page id of the bucket's root-level page
+	// 自增 id
 	sequence uint64 // monotonically incrementing, used by NextSequence()
 }
 
@@ -79,6 +96,7 @@ func (b *Bucket) Writable() bool {
 // Cursor creates a cursor associated with the bucket.
 // The cursor is only valid as long as the transaction is open.
 // Do not use a cursor after the transaction is closed.
+// 创建一个与 bucket 关联的 cursor
 func (b *Bucket) Cursor() *Cursor {
 	// Update transaction statistics.
 	b.tx.stats.CursorCount++
@@ -93,8 +111,11 @@ func (b *Bucket) Cursor() *Cursor {
 // Bucket retrieves a nested bucket by name.
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
+// 根据 name 查找Bucket
 func (b *Bucket) Bucket(name []byte) *Bucket {
 	if b.buckets != nil {
+		// 查看 Buckets 缓存记录中有没有，有则直接返回
+		// 在 父Bucket 缓存的 子Bucket 中查找，若有则返回
 		if child := b.buckets[string(name)]; child != nil {
 			return child
 		}
