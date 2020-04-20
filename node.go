@@ -12,19 +12,20 @@ import (
 type node struct {
 	// 更上层的数据结构，每一个 bucket 都是一个完整的 B+Tree
 	bucket *Bucket
-	// 区分 branch node 和 leaf node
+	// 区分 branch 和 leaf
 	isLeaf bool
 	// 是否平衡
 	unbalanced bool
-	spilled    bool
-	// 保存 inodes 第一个键值对的 key，
+	// 是否溢出
+	spilled bool
+	// 该 node 的起始 key
 	key  []byte
 	pgid pgid
-	// 父节点
+	// 父节点指针
 	parent *node
-	// 子节点
+	// 子节点指针
 	children nodes
-	// 存储 key value 的结构体数组
+	// 存储键值对的结构体数组
 	inodes inodes
 }
 
@@ -47,7 +48,7 @@ func (n *node) minKeys() int {
 }
 
 // size returns the size of the node after serialization.
-// 一个 node 里面存了多少 k-v 对
+// 一个 node 里面存了多少键值对
 func (n *node) size() int {
 	sz, elsz := pageHeaderSize, n.pageElementSize()
 	for i := 0; i < len(n.inodes); i++ {

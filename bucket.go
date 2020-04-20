@@ -34,8 +34,7 @@ type Bucket struct {
 	// Bucket 的头部
 	*bucket
 	// 事务，每次事务都是一次查找定位，修改或读取数据的过程
-	tx *Tx // the associated transaction
-	// 缓存记录查找过程中已经查找过的 buckets
+	tx      *Tx                // the associated transaction
 	buckets map[string]*Bucket // subbucket cache
 	// inline Bucket 的 page 引用
 	page *page // inline page reference
@@ -49,6 +48,7 @@ type Bucket struct {
 	// amount if you know that your write workloads are mostly append-only.
 	//
 	// This is non-persisted across transactions so it must be set in every Tx.
+
 	// Bucket中节点的填充百分比(或者占空比)。
 	// 该值与 B+ Tree 中节点的分裂有关系，当节点中 Key 的个数或者 size 超过整个 node 容量的某个百分比后，
 	// 节点必须分裂为两个节点，这是为了防止 B+ Tree 中插入 K/V 时引发频繁的再平衡操作，
@@ -111,7 +111,7 @@ func (b *Bucket) Cursor() *Cursor {
 // Bucket retrieves a nested bucket by name.
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
-// 根据 name 查找Bucket
+// 根据 name 查找 Bucket
 func (b *Bucket) Bucket(name []byte) *Bucket {
 	if b.buckets != nil {
 		// 查看 Buckets 缓存记录中有没有，有则直接返回

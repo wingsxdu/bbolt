@@ -15,7 +15,7 @@ import (
 // Changing data while traversing with a cursor may cause it to be invalidated
 // and return unexpected keys and/or values. You must reposition your cursor
 // after mutating data.
-// b+ tree(bucket)的迭代器，用于遍历数据库
+// B+ Tree(Bucket)的迭代器
 type Cursor struct {
 	// 遍历的 bucket
 	bucket *Bucket
@@ -379,13 +379,13 @@ func (c *Cursor) node() *node {
 }
 
 // elemRef represents a reference to an element on a given page/node.
-// elemRef 指向 B+Tree 上的一个节点，节点有可能已经实例化成 node，也有可能是未实例化的 page。
+// elemRef 指向 B+ Tree 的一个节点，节点有可能已经实例化成 node，也有可能是未实例化的 page。
 type elemRef struct {
 	// 当前节点的 page
 	page *page
 	// 当前节点的 node
 	node *node
-	// page或node中的下标
+	// page 或 node 中的下标
 	index int
 }
 

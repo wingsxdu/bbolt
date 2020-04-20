@@ -33,7 +33,7 @@ const (
 
 type pgid uint64
 
-//
+// page header
 type page struct {
 	// page id
 	id pgid
@@ -119,9 +119,9 @@ func (s pages) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s pages) Less(i, j int) bool { return s[i].id < s[j].id }
 
 // branchPageElement represents a node on a branch page.
-// branch node 的 value 是子节点的 page id
+// value 是子节点的 page id
 type branchPageElement struct {
-	// Element 对应的键值对存储位置相对于当前 Element 的偏移量
+	// Element 对应 key 存储位置相对于当前 Element 的偏移量
 	pos uint32
 	// Element 对应 key 的大小，以 byte 为单位
 	ksize uint32

@@ -113,7 +113,7 @@ func (f *freelist) copyallunsafe(dstptr unsafe.Pointer) { // dstptr is []pgid da
 	mergepgids(dst, fpgids, m)
 }
 
-// 将 f.ids 和 f.pending 的内容有序地合并到 dst 中
+// 将 f.ids 和 f.pending 的内容有序地合并到 dst 切片中
 func (f *freelist) copyall(dst []pgid) {
 	m := make(pgids, 0, f.pending_count())
 	for _, txp := range f.pending {
@@ -131,17 +131,20 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 	}
 
 	var initial, previd pgid
+	// 从 ids 中确定分配的 pgid
 	for i, id := range f.ids {
 		if id <= 1 {
 			panic(fmt.Sprintf("invalid page allocation: %d", id))
 		}
 
 		// Reset initial page if this is not contiguous.
+		// 如果不具有连续性，重新设置initial的值
 		if previd == 0 || id-previd != 1 {
 			initial = id
 		}
 
 		// If we found a contiguous block then remove it and return it.
+		// 如果这段连续空间的长度满足 n
 		if (id-initial)+1 == pgid(n) {
 			// If we're allocating off the beginning then take the fast path
 			// and just adjust the existing slice. This will use extra memory
@@ -150,12 +153,14 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 			if (i + 1) == n {
 				f.ids = f.ids[i+1:]
 			} else {
+				// 把[initial, id] 从空间中去除
 				copy(f.ids[i-n+1:], f.ids[i+1:])
 				f.ids = f.ids[:len(f.ids)-n]
 			}
 
 			// Remove from the free cache.
 			for i := pgid(0); i < pgid(n); i++ {
+				// 从cache中删除对应的pgid
 				delete(f.cache, initial+i)
 			}
 			f.allocs[initial] = txid
@@ -169,6 +174,7 @@ func (f *freelist) arrayAllocate(txid txid, n int) pgid {
 
 // free releases a page and its overflow for a given transaction id.
 // If the page is already free then a panic will occur.
+// 释放 page 到 f.pending 中
 func (f *freelist) free(txid txid, p *page) {
 	if p.id <= 1 {
 		panic(fmt.Sprintf("cannot free page 0 or 1: %d", p.id))
@@ -188,6 +194,7 @@ func (f *freelist) free(txid txid, p *page) {
 		allocTxid = txid - 1
 	}
 
+	// 释放 [p.id, p.id+p.overflow]  page
 	for id := p.id; id <= p.id+pgid(p.overflow); id++ {
 		// Verify that page is not already free.
 		if f.cache[id] {
@@ -196,6 +203,7 @@ func (f *freelist) free(txid txid, p *page) {
 		// Add to the freelist and cache.
 		txp.ids = append(txp.ids, id)
 		txp.alloctx = append(txp.alloctx, allocTxid)
+		// 打上释放标记
 		f.cache[id] = true
 	}
 }
@@ -203,6 +211,7 @@ func (f *freelist) free(txid txid, p *page) {
 // release moves all page ids for a transaction id (or older) to the freelist.
 func (f *freelist) release(txid txid) {
 	m := make(pgids, 0)
+	// 遍历 f.pending，将 txid 少于给定的 txid 的列表给合并在一起，并删除对应的 key
 	for tid, txp := range f.pending {
 		if tid <= txid {
 			// Move transaction's pending pages to the available freelist.
@@ -211,6 +220,7 @@ func (f *freelist) release(txid txid) {
 			delete(f.pending, tid)
 		}
 	}
+	// 迁移到 f.mergeSpans 中
 	f.mergeSpans(m)
 }
 
@@ -275,11 +285,13 @@ func (f *freelist) rollback(txid txid) {
 }
 
 // freed returns whether a given page is in the free list.
+// 判断对应的 page 是否被释放
 func (f *freelist) freed(pgid pgid) bool {
 	return f.cache[pgid]
 }
 
 // read initializes the freelist from a freelist page.
+// 将一个 freelist page 实例化
 func (f *freelist) read(p *page) {
 	if (p.flags & freelistPageFlag) == 0 {
 		panic(fmt.Sprintf("invalid freelist page: %d, page type is %s", p.id, p.typ()))

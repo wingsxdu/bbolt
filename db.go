@@ -478,7 +478,7 @@ func (db *DB) init() error {
 	p.count = 0
 
 	// Write the buffer to our data file.
-	// 调用写文件函数将 buffer 中的数据写入文件
+	// 调用写文件函数将 buf 中的数据写入文件
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
@@ -1168,13 +1168,13 @@ type meta struct {
 	pageSize uint32
 	// 没有用到
 	flags uint32
-	// 根 bucket 的头信息，初始化为 page id = 3
+	// 存储 rootBucket 所在的 page
 	root bucket
-	// 指向 freelist 的 page id，初始化为 2
+	// freelist 所在的 pgid，初始化为 2
 	freelist pgid
-	// 正式数据 从 page id 4 开始，值为已经使用的最大 pgid +1，与 MVCC 有关
+	// 已经申请的 page 数量，值为 max_pgid +1
 	pgid pgid
-	// 事务序列号
+	// 上次写事务的 id
 	txid txid
 	// 上面各字段的 64 位 FNV 哈希校验
 	checksum uint64
